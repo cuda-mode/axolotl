@@ -313,6 +313,7 @@ def load_model(
         # Modify all llama derived models in one block
 
         if cfg.flash_attention:
+
             from axolotl.monkeypatch.llama_attn_hijack_flash import (
                 replace_llama_attn_with_flash_attn,
             )
@@ -325,14 +326,14 @@ def load_model(
                         cross_entropy=cfg.flash_attn_cross_entropy,
                         rms_norm=cfg.flash_attn_rms_norm,
                     )
-            elif cfg.s2_attention:
-                LOG.info("patching w/ flash-enabled, shifted-sparse attention")
-                replace_llama_attn_with_flash_attn(
-                    packed=False,
-                    cross_entropy=cfg.flash_attn_cross_entropy,
-                    rms_norm=cfg.flash_attn_rms_norm,
-                    use_shifted_sparse_attn=True,
-                )
+            # elif cfg.s2_attention:
+            #     LOG.info("patching w/ flash-enabled, shifted-sparse attention")
+            #     replace_llama_attn_with_flash_attn(
+            #         packed=False,
+            #         cross_entropy=cfg.flash_attn_cross_entropy,
+            #         rms_norm=cfg.flash_attn_rms_norm,
+            #         use_shifted_sparse_attn=True,
+            #     )
         elif cfg.xformers_attention:
             from axolotl.monkeypatch.llama_attn_hijack_xformers import (
                 hijack_llama_attention,
@@ -365,11 +366,11 @@ def load_model(
         LOG.info("patching mistral with flash attention")
         replace_mistral_attn_with_flash_attn(packed=cfg.sample_packing)
 
-    if cfg.is_llama_derived_model and cfg.sample_packing and not inference:
-        from axolotl.monkeypatch.llama_expand_mask import hijack_expand_mask
+    # if cfg.is_llama_derived_model and cfg.sample_packing and not inference:
+    #     from axolotl.monkeypatch.llama_expand_mask import hijack_expand_mask
 
-        LOG.info("patching _expand_mask")
-        hijack_expand_mask()
+    #     LOG.info("patching _expand_mask")
+    #     hijack_expand_mask()
 
     model_kwargs: Dict[str, Any] = {}
 

@@ -56,6 +56,7 @@ def train(
         main_process_only=True,
     )
     tokenizer = load_tokenizer(cfg)
+    tokenizer.pad_token = tokenizer.eos_token
 
     train_dataset = dataset_meta.train_dataset
     eval_dataset = dataset_meta.eval_dataset
@@ -77,6 +78,7 @@ def train(
     resume_from_checkpoint = cfg.resume_from_checkpoint
 
     # Load the model and tokenizer
+    print("loading model...", os.getpid())
     msg = "loading model"
     if cfg.adapter:
         msg += " and peft_config..."

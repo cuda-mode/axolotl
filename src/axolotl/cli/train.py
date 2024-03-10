@@ -4,6 +4,7 @@ CLI to run training on a model
 import logging
 from pathlib import Path
 from typing import Tuple, Union
+import os
 
 import fire
 from transformers.hf_argparser import HfArgumentParser
@@ -26,6 +27,7 @@ LOG = logging.getLogger("axolotl.cli.train")
 
 
 def do_cli(config: Union[Path, str] = Path("examples/"), **kwargs):
+    print(f"do_cli:{os.getpid()}")
     # pylint: disable=duplicate-code
     parsed_cfg = load_cfg(config, **kwargs)
     parser = HfArgumentParser((TrainerCliArgs))

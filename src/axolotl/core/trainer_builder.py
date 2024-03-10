@@ -8,16 +8,20 @@ import importlib
 import importlib.util
 import logging
 import math
+import os
 import sys
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
-from typing import List, Optional, Type, Union
+from typing import Any, Dict, List, Optional, Type, Union
+from axolotl.utils.distributed import get_world_size
 
 import torch
+import torch.nn as nn
 import transformers
 from datasets import Dataset
+import torch.distributed as dist
 from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import BatchSampler, DataLoader, RandomSampler, SequentialSampler
 from transformers import (
@@ -241,6 +245,50 @@ class AxolotlTrainer(Trainer):
             )
 
         return self.optimizer
+
+    def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]]) -> torch.Tensor:
+
+        input_ids: torch.Tensor = inputs["input_ids"]
+        position_ids: torch.Tensor = inputs["position_ids"]
+        attention_mask: torch.Tensor = inputs["attention_mask"]
+        labels: torch.Tensor = inputs["labels"]
+
+        print(f"[{os.getpid()}] training_step: input_ids={input_ids.shape}, position_ids={position_ids.shape}, attention_mask={attention_mask.shape}")
+
+        num_gpus = get_world_size()
+        #print("num_gpus:", num_gpus)
+        input_chunks = input_ids.chunk(num_gpus, dim=1)
+        position_chunks = position_ids.chunk(num_gpus, dim=1)
+        attention_chunks = attention_mask.chunk(num_gpus, dim=1)
+        label_chunks = labels.chunk(num_gpus, dim=1)
+
+        rank = dist.get_rank()
+        for i in range(num_gpus):
+            if rank == 0:
+                print(f"{i} chunk shape: {input_chunks[i].shape}")
+            dist.broadcast(input_chunks[i], src=0)
+            dist.broadcast(position_chunks[i], src=0)
+            dist.broadcast(attention_chunks[i], src=0)
+
+        
+        inputs_ = {
+            "input_ids": input_chunks[rank],
+            "position_ids": position_chunks[rank],
+            "attention_mask": attention_chunks[rank],
+            "labels": label_chunks[rank],
+        }
+        for k,v in inputs.items():
+            if k not in inputs_:
+                inputs_[k] = v
+        inputs = inputs_
+
+        # input_ids: torch.Tensor = inputs["input_ids"]
+        # position_ids: torch.Tensor = inputs["position_ids"]
+        # attention_mask: torch.Tensor = inputs["attention_mask"]
+        # labels: torch.Tensor = inputs["labels"]
+        # print(f"[{os.getpid()}] after split training_step: input_ids={input_ids.shape}, position_ids={position_ids.shape}, attention_mask={attention_mask.shape}, labels={labels.shape}")
+
+        return super().training_step(model, inputs)
 
     def create_scheduler(
         self, num_training_steps: int, optimizer: torch.optim.Optimizer = None

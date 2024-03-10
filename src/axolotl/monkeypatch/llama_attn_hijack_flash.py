@@ -27,18 +27,19 @@ from xformers.ops import SwiGLU
 from axolotl.monkeypatch.utils import get_cu_seqlens_from_pos_ids, set_module_name
 
 try:
-    from flash_attn.flash_attn_interface import (  # pylint: disable=ungrouped-imports
-        flash_attn_kvpacked_func,
-        flash_attn_varlen_kvpacked_func,
-        flash_attn_varlen_qkvpacked_func,
+    from ring_flash_attn import (  # pylint: disable=ungrouped-imports
+        ring_flash_attn_kvpacked_func,
+        ring_flash_attn_varlen_kvpacked_func,
+        ring_flash_attn_varlen_qkvpacked_func,
     )
-except ImportError:
-    from flash_attn.flash_attn_interface import (
-        flash_attn_unpadded_kvpacked_func as flash_attn_varlen_kvpacked_func,
-    )
-    from flash_attn.flash_attn_interface import (
-        flash_attn_unpadded_qkvpacked_func as flash_attn_varlen_qkvpacked_func,
-    )
+except:
+    print("flash_attn import error")
+    # from flash_attn.flash_attn_interface import (
+    #     flash_attn_unpadded_kvpacked_func as ring_flash_attn_varlen_kvpacked_func,
+    # )
+    # from flash_attn.flash_attn_interface import (
+    #     flash_attn_unpadded_qkvpacked_func as ring_flash_attn_varlen_qkvpacked_func,
+    # )
 
 
 LOG = logging.getLogger("axolotl")
@@ -66,16 +67,17 @@ def replace_llama_mlp_with_swiglu(model):
 
 
 def replace_llama_qkv_with_fused(model):
-    for name, module in model.named_modules():
-        if isinstance(module, LlamaAttention):
-            qkv = FusedAttention(
-                module.config,
-                module.q_proj,
-                module.k_proj,
-                module.v_proj,
-                module.o_proj,
-            )
-            set_module_name(model, name, qkv)
+    pass
+    # for name, module in model.named_modules():
+    #     if isinstance(module, LlamaAttention):
+    #         qkv = FusedAttention(
+    #             module.config,
+    #             module.q_proj,
+    #             module.k_proj,
+    #             module.v_proj,
+    #             module.o_proj,
+    #         )
+    #         set_module_name(model, name, qkv)
 
 
 def replace_llama_attn_with_flash_attn(
@@ -348,7 +350,7 @@ def flashattn_forward_with_s2attn(
     x_unpad = rearrange(
         x_unpad, "nnz (three h d) -> nnz three h d", three=3, h=nheads // 2
     )
-    output_unpad = flash_attn_varlen_qkvpacked_func(
+    output_unpad = ring_flash_attn_varlen_qkvpacked_func(
         x_unpad, cu_q_lens, group_size, 0.0, softmax_scale=None, causal=True
     )
     output = rearrange(
@@ -382,6 +384,7 @@ def flashattn_forward(
 
     attention_mask: [bsz, q_len]
     """
+
     # pylint: disable=duplicate-code
     bsz, q_len, _ = hidden_states.size()
 
@@ -486,7 +489,7 @@ def flashattn_forward(
         qkv = qkv.transpose(1, 3)  # [bsz, q_len, 3, nh, hd]
         qkv = rearrange(qkv, "b s ... -> (b s) ...")
 
-        output = flash_attn_varlen_qkvpacked_func(
+        output = ring_flash_attn_varlen_qkvpacked_func(
             qkv,
             cu_seqlens,
             max_seqlen,
@@ -511,7 +514,7 @@ def flashattn_forward(
             if attention_mask is not None
             else None,
         )
-        output_unpad = flash_attn_varlen_qkvpacked_func(
+        output_unpad = ring_flash_attn_varlen_qkvpacked_func(
             qkv_unpad,
             cu_seqlens_q,
             max_seqlen_q,
@@ -525,7 +528,7 @@ def flashattn_forward(
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
         if attention_mask is None or attention_mask.all().item():
-            output = flash_attn_kvpacked_func(
+            output = ring_flash_attn_kvpacked_func(
                 query_states,
                 torch.stack([key_states, value_states], 2),
                 dropout_p=dropout_rate,
@@ -554,13 +557,11 @@ def flashattn_forward(
             )
             if q_unpad.dtype != kv_unpad.dtype:
                 kv_unpad = kv_unpad.to(q_unpad.dtype)
-            output_unpad = flash_attn_varlen_kvpacked_func(
+            output_unpad = ring_flash_attn_varlen_kvpacked_func(
                 q_unpad,
                 kv_unpad,
-                cu_seqlens_q,
-                cu_seqlens_k,
-                max_seqlen_q,
-                max_seqlen_k,
+                torch.stack([cu_seqlens_q, cu_seqlens_k], 2),
+                torch.stack([max_seqlen_q, max_seqlen_k], 2),
                 dropout_p=dropout_rate,
                 softmax_scale=None,
                 causal=is_causal,
