@@ -14,24 +14,24 @@ dataset_prepared_path:
 val_set_size: 0.0
 output_dir: ./model-out
 
-sequence_len: 32768
+sequence_len: 2048
 sample_packing: true
 pad_to_sequence_len: true
 
-wandb_project:
+wandb_project: axolotl
 wandb_entity:
 wandb_watch:
-wandb_name:
+wandb_name: tinyllama-ringattn-training-step
 wandb_log_model:
 
-gradient_accumulation_steps: 4
-micro_batch_size: 1
-num_epochs: 4
+gradient_accumulation_steps: 8 #4
+micro_batch_size: 2
+num_epochs: 100
 optimizer: adamw_bnb_8bit
 lr_scheduler: cosine
 learning_rate: 0.0002
 
-train_on_inputs: false
+train_on_inputs: true # false
 group_by_length: false
 bf16: auto
 fp16:
@@ -48,7 +48,7 @@ flash_attention: true
 warmup_steps: 10
 evals_per_epoch:
 eval_table_size:
-saves_per_epoch: 1
+saves_per_epoch: 10
 debug:
 deepspeed:
 weight_decay: 0.0

@@ -560,8 +560,8 @@ def flashattn_forward(
             output_unpad = ring_flash_attn_varlen_kvpacked_func(
                 q_unpad,
                 kv_unpad,
-                torch.stack([cu_seqlens_q, cu_seqlens_k], 2),
-                torch.stack([max_seqlen_q, max_seqlen_k], 2),
+                cu_seqlens_q,
+                max_seqlen_q,
                 dropout_p=dropout_rate,
                 softmax_scale=None,
                 causal=is_causal,

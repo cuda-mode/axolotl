@@ -250,13 +250,16 @@ class AxolotlTrainer(Trainer):
 
         input_ids: torch.Tensor = inputs["input_ids"]
         position_ids: torch.Tensor = inputs["position_ids"]
+
+        # patch flat position ids (cu_seqlens tensor is built based on 0 pos ids)
+        position_ids = torch.arange(0, position_ids.shape[1], device=position_ids.device, dtype=position_ids.dtype).repeat(position_ids.shape[0], 1)
+
         attention_mask: torch.Tensor = inputs["attention_mask"]
         labels: torch.Tensor = inputs["labels"]
 
         print(f"[{os.getpid()}] training_step: input_ids={input_ids.shape}, position_ids={position_ids.shape}, attention_mask={attention_mask.shape}")
 
         num_gpus = get_world_size()
-        #print("num_gpus:", num_gpus)
         input_chunks = input_ids.chunk(num_gpus, dim=1)
         position_chunks = position_ids.chunk(num_gpus, dim=1)
         attention_chunks = attention_mask.chunk(num_gpus, dim=1)
@@ -269,7 +272,7 @@ class AxolotlTrainer(Trainer):
             dist.broadcast(input_chunks[i], src=0)
             dist.broadcast(position_chunks[i], src=0)
             dist.broadcast(attention_chunks[i], src=0)
-
+            dist.broadcast(label_chunks[i], src=0)
         
         inputs_ = {
             "input_ids": input_chunks[rank],
