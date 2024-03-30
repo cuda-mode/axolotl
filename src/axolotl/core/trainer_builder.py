@@ -32,6 +32,7 @@ from transformers import (
 )
 from transformers.trainer_utils import seed_worker
 from transformers.utils import is_sagemaker_mp_enabled
+from accelerate.utils import recursively_apply
 from trl import DPOTrainer
 
 from axolotl.loraplus import create_loraplus_optimizer
@@ -211,11 +212,13 @@ class AxolotlTrainer(Trainer):
         num_epochs=1,
         bench_data_collator=None,
         eval_data_collator=None,
+        ring_attention=False,
         **kwargs
     ):
         self.num_epochs = num_epochs
         self.bench_data_collator = bench_data_collator
         self.eval_data_collator = eval_data_collator
+        self.ring_attention = ring_attention
         super().__init__(*_args, **kwargs)
         self.train_data_collator = self.data_collator
 
@@ -247,50 +250,6 @@ class AxolotlTrainer(Trainer):
         return self.optimizer
 
     def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]]) -> torch.Tensor:
-
-        input_ids: torch.Tensor = inputs["input_ids"]
-        position_ids: torch.Tensor = inputs["position_ids"]
-
-        # patch flat position ids (cu_seqlens tensor is built based on 0 pos ids)
-        position_ids = torch.arange(0, position_ids.shape[1], device=position_ids.device, dtype=position_ids.dtype).repeat(position_ids.shape[0], 1)
-
-        attention_mask: torch.Tensor = inputs["attention_mask"]
-        labels: torch.Tensor = inputs["labels"]
-
-        print(f"[{os.getpid()}] training_step: input_ids={input_ids.shape}, position_ids={position_ids.shape}, attention_mask={attention_mask.shape}")
-
-        num_gpus = get_world_size()
-        input_chunks = input_ids.chunk(num_gpus, dim=1)
-        position_chunks = position_ids.chunk(num_gpus, dim=1)
-        attention_chunks = attention_mask.chunk(num_gpus, dim=1)
-        label_chunks = labels.chunk(num_gpus, dim=1)
-
-        rank = dist.get_rank()
-        for i in range(num_gpus):
-            if rank == 0:
-                print(f"{i} chunk shape: {input_chunks[i].shape}")
-            dist.broadcast(input_chunks[i], src=0)
-            dist.broadcast(position_chunks[i], src=0)
-            dist.broadcast(attention_chunks[i], src=0)
-            dist.broadcast(label_chunks[i], src=0)
-        
-        inputs_ = {
-            "input_ids": input_chunks[rank],
-            "position_ids": position_chunks[rank],
-            "attention_mask": attention_chunks[rank],
-            "labels": label_chunks[rank],
-        }
-        for k,v in inputs.items():
-            if k not in inputs_:
-                inputs_[k] = v
-        inputs = inputs_
-
-        # input_ids: torch.Tensor = inputs["input_ids"]
-        # position_ids: torch.Tensor = inputs["position_ids"]
-        # attention_mask: torch.Tensor = inputs["attention_mask"]
-        # labels: torch.Tensor = inputs["labels"]
-        # print(f"[{os.getpid()}] after split training_step: input_ids={input_ids.shape}, position_ids={position_ids.shape}, attention_mask={attention_mask.shape}, labels={labels.shape}")
-
         return super().training_step(model, inputs)
 
     def create_scheduler(
@@ -424,8 +383,36 @@ class AxolotlTrainer(Trainer):
             dataloader_params["worker_init_fn"] = seed_worker
 
             self.accelerator.even_batches = False
+
+            slice_fn_for_dispatch = None
+            if self.ring_attention:
+                def ring_attention_slice_fn(
+                    data: Any,
+                    tensor_slice: slice,
+                    process_index: Optional[int]=None,
+                    num_processes: Optional[int]=None,
+                ):
+                    def _rank_slice(tensor: torch.Tensor, tensor_slice: slice):
+                        assert tensor.ndim == 2, f"expected 2D tensor of shape [batch_size, sequence_length] got {tensor.shape}"
+                        b, s = tensor.shape
+                        assert s % num_processes == 0, f"sequence length ({s}) must be divisible by num_processes ({num_processes})"
+                        t = tensor[tensor_slice]
+                        rank_begin = s // num_processes * process_index
+                        rank_end = s // num_processes * (process_index + 1)
+                        return t[:, rank_begin:rank_end]
+
+                    # patch flat position ids (cu_seqlens tensor is built based on 0 pos ids)
+                    if "position_ids" in data.data:
+                        position_ids = data.data["position_ids"]
+                        position_ids = torch.arange(0, position_ids.shape[1], device=position_ids.device, dtype=position_ids.dtype).repeat(position_ids.shape[0], 1)
+                        data.data["position_ids"] = position_ids
+                    return recursively_apply(_rank_slice, data, tensor_slice)
+
+                slice_fn_for_dispatch = ring_attention_slice_fn
+
             return self.accelerator.prepare_data_loader(
-                DataLoader(train_dataset, **dataloader_params)
+                DataLoader(train_dataset, **dataloader_params),
+                slice_fn_for_dispatch=slice_fn_for_dispatch,
             )
         return super().get_train_dataloader()
 
@@ -1099,6 +1086,8 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
                 **training_arguments_kwargs,
             )
         )
+        if self.cfg.ring_attention:
+            training_args.accelerator_config = { "dispatch_batches": True }
         training_args = self.hook_post_create_training_args(training_args)
 
         data_collator_kwargs = {
@@ -1121,6 +1110,7 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
             model=self.model,
             train_dataset=self.train_dataset,
             eval_dataset=self.eval_dataset,
+            ring_attention=self.cfg.ring_attention,
             args=training_args,
             data_collator=self.build_collator(training_args, **data_collator_kwargs),
             eval_data_collator=self.build_collator(
